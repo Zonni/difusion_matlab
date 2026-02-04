@@ -1,3 +1,5 @@
+% Problema de un reactor 
+
 L = 350;
 D = [1.446, 0.776+ zeros(1,12) ,1.446];
 sigma_a = [0.0077, 0.0244+ zeros(1,12), 0.0077];
