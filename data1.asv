@@ -1,0 +1,59 @@
+% Dimension of the problem (1 or 2) AMBDOS
+dimension = 1;
+
+% Number of eigenvalues required AMBDOS
+n_eigenvalues = 1;
+
+% Energy groups AMBDOS
+energy_groups = 2;
+
+% Numerical method (FEM or FDM)
+method = FEM;
+
+%
+% REACTOR and MESH DEFINITION
+% Finite element degree		NOMES FEM
+fe_degree = 1;
+ 
+% Number of global refinements	AMBDOS
+n_refinements = 0;
+
+%Number of cells per dimension AMBDOS
+mesh_size = 60;
+cell_pitch_x = 60* 5.00;
+
+cell_pitch_y = 40;
+
+% Boundary Conditons (LEFT RIGHT DOWN UP)   (0 ZeroFlux) (2 Vaccum) NOMES 0 PER A FEM, LES DOS PER A FDM
+boundary_conditions = 0;
+ 
+%
+% OUT OPTIONS
+% Filename where will be written the output.
+output_filename = "results/result.mat";
+
+% True/false - Save graphs
+output_Flag             = false
+
+# TIME OPTIONS		NOMES SI FEM
+set Transient               = true
+
+# Delta time of the iteration	NOMES SI FEM I TRANSIENT TRUE
+set Time_Delta              = 0.001
+set Time_End                = 10.0
+ 
+# Input types
+set XSECS_Filename          = data/data1.m
+
+# Distribution of the instability: Flux_Distributed or Single_Material NOMES SI FEM I TRANSIENT
+set Type_Perturbation       = Ramp_Two_Mats
+set Material_Changing       = 2 3
+
+
+# Type of instability Constant | Ramp NOMES SI FEM I TRANSIENT
+set Perturbation_Function   = Ramp
+set Slope_Up                = -0.1 0.0
+set Slope_Down              = 0.0 -0.001
+set Cut_Time                = 0.1  1.0
+
+

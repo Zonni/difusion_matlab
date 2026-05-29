@@ -1,0 +1,77 @@
+% --- GENERAL CONFIGURATION ---
+% Numerical method (FEM or FDM)
+method = 'FEM';
+
+% Number of eigenvalues required
+n_eigenvalues = 1;
+
+% Energy groups
+energy_groups = 2;
+
+% --- BANK OPTIONS ---
+bank = 'Mat1D2gTransHomo_absesc';   
+
+% --- GEOMETRY ---
+region_lengths = [40];                  
+cells_per_region = [10];                
+region_materials = [1];                 
+
+% --- FDM RELATED CONFIGURATION ---
+dimension = 1;
+n_refinements = 0;
+boundary_conditions = 0;
+
+% --- FEM RELATED CONFIGURATION ---
+fe_degree = 3;
+transient = true;
+Solver = 'fem_gTransPC';
+time_delta = 0.001;
+time_end = 0.5;
+
+% --- PERTURBATION ---
+material_changing = 1;
+perturbation_function = 'linear';
+slope = 1e-4;
+
+% --- OUTPUT ---
+output_filename = 'result';
+output_flag = true;
+
+% % --- GENERAL CONFIGURATION ---
+% % Numerical method (FEM or FDM)
+% method = 'FDM';
+% 
+% % Number of eigenvalues required
+% n_eigenvalues = 1;
+% 
+% % Energy groups
+% energy_groups = 2;
+% 
+% % --- BANK OPTIONS ---
+% bank = 'Mat1D2gTransHomo_abslin';   
+% 
+% % --- GEOMETRY ---
+% region_lengths = [40];                  
+% cells_per_region = [10];                
+% region_materials = [1];                 
+% 
+% % --- FDM RELATED CONFIGURATION ---
+% dimension = 1;
+% n_refinements = 0;
+% boundary_conditions = 0;
+% 
+% % --- FEM RELATED CONFIGURATION ---
+% fe_degree = 3;
+% transient = true;
+% Solver = 'fem_2gTransPC';
+% time_delta = 0.001;
+% time_end = 0.5;
+% 
+% % --- PERTURBATION ---
+% material_changing = 1;
+% perturbation_function = 'linear';
+% slope = 1e-7;
+% 
+% % --- OUTPUT ---
+% output_filename = 'result';
+% output_flag = true;

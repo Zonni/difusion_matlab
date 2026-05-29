@@ -1,0 +1,174 @@
+addpath('../..') 
+clearvars; close all; clc;
+
+%% 1. SIMULATION PARAMETERS
+% We loop over TARGET DEGREES OF FREEDOM (Approximate Matrix Size)
+DOF_values = [20, 50, 100, 200, 500, 1000, 2000, 5000]; 
+
+% Physical Constants (Homogeneous Fuel)
+L = 350; 
+D_val = 0.776; 
+SigA_val = 0.0244; 
+NuSigF_val = 0.0260;
+
+% Analytic K-eff
+k_analytic = NuSigF_val / (SigA_val + D_val * (pi / L)^2);
+
+% Pre-allocate results
+results.ruben.keff = zeros(length(DOF_values), 1);
+results.ruben.err  = zeros(length(DOF_values), 1);
+results.ruben.size = zeros(length(DOF_values), 1); 
+
+results.jaime_fdm.keff = zeros(length(DOF_values), 1);
+results.jaime_fdm.err  = zeros(length(DOF_values), 1);
+results.jaime_fdm.size = zeros(length(DOF_values), 1);
+
+results.jaime_fem.keff = zeros(length(DOF_values), 1);
+results.jaime_fem.err  = zeros(length(DOF_values), 1);
+results.jaime_fem.size = zeros(length(DOF_values), 1);
+
+FEM_DEGREE = 4; 
+
+fprintf('Running convergence study...\n');
+
+%% 2. MAIN LOOP
+for i = 1:length(DOF_values)
+    target_dof = DOF_values(i);
+    
+    % =====================================================================
+    % A. RUBÉN'S SOLUTION (Mesh-Centered FDM)
+    % =====================================================================
+    N_Ruben = target_dof; % Matrix size is N
+    
+    meshR = Mesh_1D_FDM(L, 1, N_Ruben);
+    matsR = Materials_1D_1eg_FDM(1, D_val, SigA_val, NuSigF_val);
+    probR = Problem_1D_1eg_FDM(meshR, matsR);
+    probR = probR.assembleMatrices();
+    probR = probR.solveEigenvalues(1);
+    
+    results.ruben.keff(i) = probR.keff(1);
+    results.ruben.size(i) = meshR.nNodes;
+    
+    % RMSE Calculation (Internal Nodes Only)
+    phi_R = probR.phi(2:end-1, 1);
+    x_R   = meshR.nodes_vec;
+    
+    phi_ana_R = sin(pi * x_R / L);
+    
+    % Error Formula (RMSE): sqrt( mean( ((Ana - Num)/Num).^2 ) )
+    rel_dev_R = (phi_ana_R - phi_R) ./ phi_R;
+    results.ruben.err(i) = sqrt(mean(rel_dev_R.^2));
+
+    % =====================================================================
+    % B. JAIME'S SOLUTION (Point-Centered FDM)
+    % =====================================================================
+    N_Jaime = target_dof; % Matrix size is N
+    
+    tam_celdas = (L/N_Jaime) * ones(1, N_Jaime);
+    tam_celdas(end) = L - sum(tam_celdas(1:end-1));
+    
+    D_vec = D_val*ones(1,N_Jaime);
+    S_vec = SigA_val*ones(1,N_Jaime);
+    F_vec = NuSigF_val*ones(1,N_Jaime);
+    
+    mallaJ = Malla(L, N_Jaime, 1, tam_celdas, D_vec, S_vec, F_vec);
+    materiales_vec = ones(1,N_Jaime);
+    
+    materialesJ = Materiales1D1g(materiales_vec, D_val, SigA_val, NuSigF_val, mallaJ);
+    
+    probJ_FDM = ProblemaDifusion1D1g(mallaJ, materialesJ, []);
+    probJ_FDM = probJ_FDM.ensamblar_matrices_fdm();
+    probJ_FDM = probJ_FDM.aplicar_cc();
+    probJ_FDM = probJ_FDM.resolver_autovalor(1);    
+    fdm.keff(i) = probJ_FDM.keff(1);
+    results.jaime_fdm.size(i) = N_Jaime;
+    
+    % RMSE Calculation (Internal Nodes Only)
+    % Jaime's FDM returns ONLY the N internal nodes
+    phi_J = probJ_FDM.phi_inc(:, 1)
+    length(phi_J)
+    
+    % Generate the matching coordinates (Internal only)
+    x_full_fdm = linspace(0, L, N_Jaime+2)';
+    x_vec_fdm = x_full_fdm(2:end-1) % Length: N
+        
+    % Calculate Analytic solution at those specific points
+    phi_ana_J = sin(pi * x_vec_fdm / L)
+    
+    % Now both vectors are length N. Calculate error:
+    rel_dev_J = (phi_ana_J - phi_J) ./ phi_J
+    results.jaime_fdm.err(i) = sqrt(mean(rel_dev_J.^2));
+    break
+
+    % =====================================================================
+    % C. JAIME'S SOLUTION (FEM - Degree 4)
+    % =====================================================================
+    % Calc elements needed to match Matrix Size: Size ~ N_elem * Degree
+    N_FEM = max(2, round(target_dof / FEM_DEGREE)); 
+    
+    tam_celdas_fem = (L/N_FEM) * ones(1, N_FEM);
+    tam_celdas_fem(end) = L - sum(tam_celdas_fem(1:end-1));
+    D_fem = D_val*ones(1,N_FEM); S_fem = SigA_val*ones(1,N_FEM); F_fem = NuSigF_val*ones(1,N_FEM);
+    
+    elem = ElementoFinito(FEM_DEGREE);
+    mallaJ_FEM = Malla(L, N_FEM, FEM_DEGREE, tam_celdas_fem, D_fem, S_fem, F_fem);
+    
+    ObjMat_FEM.D = D_fem; ObjMat_FEM.sigma_a = S_fem; ObjMat_FEM.nu_sigma_f = F_fem; 
+    ObjMat_FEM.ind_materiales = 1:N_FEM;
+    
+    probJ_FEM = ProblemaDifusion1D1g(mallaJ_FEM, ObjMat_FEM, elem);
+    probJ_FEM = probJ_FEM.ensamblar_matrices_fem();
+    probJ_FEM = probJ_FEM.aplicar_cc();
+    probJ_FEM = probJ_FEM.resolver_autovalor(1);
+    
+    results.jaime_fem.keff(i) = probJ_FEM.keff(1);
+    results.jaime_fem.size(i) = size(probJ_FEM.A, 1); % Real Matrix Size
+    
+    % RMSE Calculation (Strictly Exclude Boundaries)
+    phi_global = probJ_FEM.phi_inc(:,1);
+    x_global   = mallaJ_FEM.x_nodos(:);
+        
+    % Get internal nodes
+    phi_in = phi_global(2:end-1);
+    x_in   = x_global(2:end-1);
+    
+    % 3. Compare
+    phi_ana = sin(pi * x_in / L);
+    rel_dev = (phi_ana - phi_in) ./ phi_in;
+    results.jaime_fem.err(i) = sqrt(mean(rel_dev(1:10).^2));
+end
+
+%% 3. GENERATE TABLES
+% Calculate K-eff Error in pcm
+err_K_Ruben = (results.ruben.keff - k_analytic) * 1e5;
+err_K_JaimeFDM = (results.jaime_fdm.keff - k_analytic) * 1e5;
+err_K_JaimeFEM = (results.jaime_fem.keff - k_analytic) * 1e5;
+
+fprintf('\n===================================================================================================\n');
+fprintf('                                   EIGENVALUE (K-EFF) COMPARISON                                   \n');
+fprintf('---------------------------------------------------------------------------------------------------\n');
+fprintf('Analytic K-eff: %.5f\n', k_analytic);
+fprintf('---------------------------------------------------------------------------------------------------\n');
+fprintf('%10s | %10s | %10s || %10s | %10s | %10s\n', ...
+    'Target DOF', 'Size(FDM)', 'Size(FEM)', 'Ruben(pcm)', 'JaimeFDM(pcm)', 'JaimeFEM(pcm)');
+fprintf('-----------|------------|------------||------------|---------------|---------------\n');
+for i = 1:length(DOF_values)
+    fprintf('%10d | %10d | %10d || %10.1f | %13.1f | %13.2f\n', ...
+        DOF_values(i), results.ruben.size(i), results.jaime_fem.size(i), ...
+        err_K_Ruben(i), err_K_JaimeFDM(i), err_K_JaimeFEM(i));
+end
+fprintf('===================================================================================================\n');
+
+
+fprintf('\n===================================================================================================\n');
+fprintf('                                   FLUX ERROR (RMSE) COMPARISON                                    \n');
+fprintf('---------------------------------------------------------------------------------------------------\n');
+fprintf('%10s | %10s | %10s || %12s | %12s| %12s\n', ...
+    'Target DOF', 'Size(FDM)', 'Size(FEM)', 'Ruben RMSE', 'JaimeFDM RMSE', 'JaimeFEM RMSE');
+fprintf('-----------|------------|------------||--------------|--------------|--------------\n');
+for i = 1:length(DOF_values)
+    fprintf('%10d | %10d | %10d || %12.4e | %12.4e | %12.4e\n', ...
+        DOF_values(i), results.ruben.size(i), results.jaime_fem.size(i), ...
+        results.ruben.err(i), results.jaime_fdm.err(i), results.jaime_fem.err(i));
+end
+fprintf('===================================================================================================\n');

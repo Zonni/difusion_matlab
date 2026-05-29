@@ -1,0 +1,571 @@
+%% nakata_martin_benchmark.m
+% Solves the 2D two-group benchmark from:
+%   Nakata, H. and Martin, W. R.
+%   "The Finite Element Response Matrix Method"
+%   Nuclear Science and Engineering: 85, 289-305 (1983)
+%
+% The reactor is an irregular octagonal shape on a 17x17 assembly grid.
+% Each assembly is 23.1226 cm x 23.1226 cm.  D = 1/(3*Sigma_tr).
+%
+% A mesh refinement study is performed by subdividing each assembly into
+% N x N uniform sub-cells (N = 1, 2, 3, 4, 5).  For each level the script
+% records DOF, assembly time, solve time, k-eff, and error in pcm.
+clearvars; close all; clc;
+addpath(fullfile(fileparts(mfilename('fullpath')), '..', '..', 'src', '2D'));
+
+%% ========================================================================
+%  1. NUCLEAR DATA  (fixed across all refinement levels)
+% =========================================================================
+D_lib = [ ...
+    1.4360,  0.3635 ;
+    1.4366,  0.3636 ;
+    1.3200,  0.2772 ;
+    1.4389,  0.3638 ;
+    1.4381,  0.3665 ;
+    1.4385,  0.3665 ;
+    1.4389,  0.3679 ;
+    1.4393,  0.3680 ];
+
+sigma_a_lib = [ ...
+    0.0095042,  0.0750580 ;
+    0.0096785,  0.0784360 ;
+    0.0026562,  0.0715960 ;
+    0.0103630,  0.0914080 ;
+    0.0100030,  0.0848280 ;
+    0.0101320,  0.0873140 ;
+    0.0101650,  0.0880240 ;
+    0.0102940,  0.0905100 ];
+
+nu_sigf_lib = [ ...
+    0.0058708,  0.0960670 ;
+    0.0061908,  0.1035800 ;
+    0.0000000,  0.0000000 ;
+    0.0074527,  0.1323600 ;
+    0.0061908,  0.1035800 ;
+    0.0064285,  0.1091100 ;
+    0.0061908,  0.1035800 ;
+    0.0064285,  0.1091100 ];
+
+chi_lib = repmat([1.0, 0.0], 8, 1);
+
+Sigma_12             = [0.017754; 0.017621; 0.023106; 0.017101; ...
+                        0.017290; 0.017192; 0.017125; 0.017027];
+sigma_s_lib          = zeros(8, 2, 2);
+sigma_s_lib(:, 1, 2) = Sigma_12;
+
+%% ========================================================================
+%  2. ASSEMBLY-LEVEL MATERIAL GRID  (17 x 17)
+%  0 = outside reactor boundary
+% =========================================================================
+assembly_mat = zeros(17, 17);
+assembly_mat( 1,:) = [0 0 0 0 3 3 3 3 3 3 3 3 3 0 0 0 0];
+assembly_mat( 2,:) = [0 0 3 3 3 4 4 4 4 4 4 4 3 3 3 0 0];
+assembly_mat( 3,:) = [0 3 3 4 4 8 1 1 1 1 1 8 4 4 3 3 0];
+assembly_mat( 4,:) = [0 3 4 4 5 1 7 1 7 1 7 1 5 4 4 3 0];
+assembly_mat( 5,:) = [3 3 4 5 2 8 2 8 1 8 2 8 2 5 4 3 3];
+assembly_mat( 6,:) = [3 4 8 1 8 2 8 2 6 2 8 2 8 1 8 4 3];
+assembly_mat( 7,:) = [3 4 1 7 2 8 1 8 2 8 1 8 2 7 1 4 3];
+assembly_mat( 8,:) = [3 4 1 1 8 2 8 1 8 1 8 2 8 1 1 4 3];
+assembly_mat( 9,:) = [3 4 1 7 1 6 2 8 1 8 2 6 1 7 1 4 3];
+assembly_mat(10,:) = [3 4 1 1 8 2 8 1 8 1 8 2 8 1 1 4 3];
+assembly_mat(11,:) = [3 4 1 7 2 8 1 8 2 8 1 8 2 7 1 4 3];
+assembly_mat(12,:) = [3 4 8 1 8 2 8 2 6 2 8 2 8 1 8 4 3];
+assembly_mat(13,:) = [3 3 4 5 2 8 2 8 1 8 2 8 2 5 4 3 3];
+assembly_mat(14,:) = [0 3 4 4 5 1 7 1 7 1 7 1 5 4 4 3 0];
+assembly_mat(15,:) = [0 3 3 4 4 8 1 1 1 1 1 8 4 4 3 3 0];
+assembly_mat(16,:) = [0 0 3 3 3 4 4 4 4 4 4 4 3 3 3 0 0];
+assembly_mat(17,:) = [0 0 0 0 3 3 3 3 3 3 3 3 3 0 0 0 0];
+
+assembly_size = 23.1226;   % cm
+
+%% ========================================================================
+%  3. REFERENCE K-EFF
+%  Nakata & Martin (1983), Table II.
+% =========================================================================
+k_ref = 1.025110;
+
+%% ========================================================================
+%  4. REFINEMENT STUDY
+% =========================================================================
+N_refine  = [1, 2, 3, 4, 5, 6]; % sub-cells per assembly side
+n_levels  = length(N_refine);
+
+keff_vec = zeros(n_levels, 1);
+dof_vec = zeros(n_levels, 1);
+t_asm_vec = zeros(n_levels, 1);
+t_sol_vec = zeros(n_levels, 1);
+err_pcm = zeros(n_levels, 1);
+
+power_history = zeros(17, 17, n_levels); 
+
+fprintf('Running refinement study...\n\n');
+
+power_history_17x17 = zeros(17, 17, 2); 
+
+for refinment = 1:n_levels
+    N = N_refine(refinment);
+    
+    % Expand assembly grid
+    region_materials = kron(assembly_mat, ones(N, N));
+    
+    % Mesh
+    region_lengths   = assembly_size * ones(17, 1);
+    cells_per_region = N * ones(17, 1);
+    
+    mesh = Mesh_2D_FDM(region_lengths, cells_per_region, ...
+                       region_lengths, cells_per_region);
+                   
+    nuclear_data = NuclearData_2D(region_materials, D_lib, sigma_a_lib, ...
+                                  nu_sigf_lib, chi_lib, sigma_s_lib);
+                              
+    % Assembly timing
+    solver = Solver_2D_FDM(mesh, nuclear_data, 'vacuum');
+    t0 = tic;
+    solver = solver.assembleMatrices();
+    t_asm_vec(refinment) = toc(t0);
+    
+    % Solve timing
+    t0 = tic;
+    solver = solver.solveEigenvalues(1);
+    t_sol_vec(refinment) = toc(t0);
+    
+    keff_vec(refinment) = solver.keff(1);
+    dof_vec(refinment) = 2 * numel(solver.active_cells);   
+    err_pcm(refinment) = abs(keff_vec(refinment) - k_ref) * 1e5;
+    
+    fprintf('N=%d | grid %dx%d | DOF=%d | k=%.6f | err=%.1f pcm | t=%.2fs\n', ...
+            N, 17*N, 17*N, dof_vec(refinment), keff_vec(refinment), err_pcm(refinment), ...
+            t_asm_vec(refinment) + t_sol_vec(refinment));
+    
+    % ---------------------------------------------------------------------
+    % POWER COMPUTATION & COLLAPSE (Only for first and last refinement)
+    % ---------------------------------------------------------------------
+    if refinment == 1 || refinment == n_levels
+        
+        % Compute normalized power using your new OOP method
+        solver.computePower(1);
+        power_density = solver.power(:, :, 1);
+        
+        % Collapse to 17x17 assembly level
+        level_power = zeros(17, 17);
+        for row = 1:17
+            for col = 1:17
+                row_idx = (row - 1) * N + 1 : row * N;
+                col_idx = (col - 1) * N + 1 : col * N;
+                
+                block_power = power_density(row_idx, col_idx);
+                
+                % Use omitnan so the reflector edges don't break the math
+                level_power(row, col) = mean(block_power(:), 'omitnan');
+            end
+        end
+        
+        % Store in the preallocated history tensor
+        if refinment == 1
+            power_history_17x17(:, :, 1) = level_power;
+        else
+            power_history_17x17(:, :, 2) = level_power;
+        end
+        
+    end
+end
+
+
+
+%% ========================================================================
+%  5. RESULTS TABLE
+% =========================================================================
+fprintf('\n');
+sep = repmat('=', 1, 94);
+fprintf('%s\n', sep);
+fprintf('  Nakata-Martin (1983) — Mesh Refinement Study\n');
+fprintf('  Reference k-eff: %.6f\n', k_ref);
+fprintf('%s\n', sep);
+fprintf('%-6s  %-10s  %-8s  %-12s  %-12s  %-10s  %-10s  %-10s\n', ...
+        'N', 'Grid', 'DOF', 'k_eff', 'err (pcm)', 'Order (p)', 't_asm (s)', 't_sol (s)');
+fprintf('%s\n', repmat('-', 1, 94));
+for refinment = 1:n_levels
+    N = N_refine(refinment);
+    
+    % Calculate empirical order of convergence (p)
+    if refinment == 1
+        order_str = '-';
+    else
+        % Since h is proportional to 1/N, the ratio h_{i-1}/h_i is N_i / N_{i-1}
+        p = log(err_pcm(refinment-1) / err_pcm(refinment)) / log(N_refine(refinment) / N_refine(refinment-1));
+        order_str = sprintf('%.2f', p);
+    end
+    
+    fprintf('%-6d  %-10s  %-8d  %-12.6f  %-12.1f  %-10s  %-10.3f  %-10.3f\n', ...
+            N, sprintf('%dx%d', 17*N, 17*N), dof_vec(refinment), ...
+            keff_vec(refinment), err_pcm(refinment), order_str, t_asm_vec(refinment), t_sol_vec(refinment));
+end
+fprintf('%s\n', sep);
+
+%% ========================================================================
+%  6. CONVERGENCE PLOTS
+% =========================================================================
+figure('Name', 'Nakata-Martin Convergence Study', 'Color', 'w', ...
+       'Position', [80, 80, 1200, 400]);
+
+% --- Panel 1: k-eff error vs DOF (log-log) with O(h^2) reference --------
+subplot(1, 3, 1);
+% O(h^2): DOF ~ 1/h^2, so error ~ C * DOF^{-1}
+h2_ref = err_pcm(1) * (dof_vec(1) ./ dof_vec);
+loglog(dof_vec, err_pcm, 'o-b', 'LineWidth', 1.8, 'MarkerSize', 7, ...
+       'MarkerFaceColor', 'b');
+hold on;
+loglog(dof_vec, h2_ref, '--k', 'LineWidth', 1.2);
+grid on; box on;
+legend('Numerical', 'O(h^2) reference', 'Location', 'southwest', ...
+       'FontSize', 9);
+xlabel('Degrees of Freedom');
+ylabel('|k_{eff} - k_{ref}|  (pcm)');
+title('k-eff Convergence');
+
+% --- Panel 2: CPU time breakdown vs DOF (log-log) ------------------------
+subplot(1, 3, 2);
+loglog(dof_vec, t_asm_vec, 's--r', 'LineWidth', 1.8, 'MarkerSize', 7, ...
+       'MarkerFaceColor', 'r');
+hold on;
+loglog(dof_vec, t_sol_vec, '^--g', 'LineWidth', 1.8, 'MarkerSize', 7, ...
+       'MarkerFaceColor', 'g');
+loglog(dof_vec, t_asm_vec + t_sol_vec, 'o-k', 'LineWidth', 1.8, ...
+       'MarkerSize', 7, 'MarkerFaceColor', 'k');
+grid on; box on;
+legend('Assembly', 'Solve', 'Total', 'Location', 'northwest', 'FontSize', 9);
+xlabel('Degrees of Freedom');
+ylabel('CPU time (s)');
+title('Computational Cost');
+
+% --- Panel 3: k-eff value vs refinement level ----------------------------
+subplot(1, 3, 3);
+plot(N_refine, keff_vec, 'o-b', 'LineWidth', 1.8, 'MarkerSize', 7, ...
+     'MarkerFaceColor', 'b');
+hold on;
+yline(k_ref, '--r', 'LineWidth', 1.5);
+grid on; box on;
+legend('Numerical k_{eff}', sprintf('Reference  k = %.6f', k_ref), ...
+       'Location', 'best', 'FontSize', 9);
+xlabel('Sub-cells per assembly side  N');
+ylabel('k_{eff}');
+xticks(N_refine);
+title('k-eff vs Mesh Level');
+
+sgtitle('Nakata-Martin (1983) — Two-Group 2D Benchmark', 'FontSize', 12);
+
+%% ========================================================================
+%  7. FLUX PLOT AT FINEST LEVEL
+% =========================================================================
+last_solver.plotPhi(1);
+
+%% ========================================================================
+%  8. COMPUTE AND PLOT ASSEMBLY POWER DISTRIBUTION
+% =========================================================================
+fprintf('Computing relative assembly power for the finest mesh...\n');
+
+% 1. Get dimensions from the finest solver
+Nx = last_solver.mesh.num_cells_x;
+Ny = last_solver.mesh.num_cells_y;
+N_active = numel(last_solver.active_cells);
+
+% 2. Compute the fission source (power density proxy) for each fine cell
+power_density = zeros(Ny, Nx);
+
+for i = 1:N_active
+    % Get the 1D linear index in the full 2D grid
+    k_full = last_solver.active_cells(i);
+    
+    % Get material index for this cell
+    m_C = region_materials(k_full);
+    
+    % Extract fluxes for mode 1 at this active cell
+    phi1_val = last_solver.phi(i, 1, 1);
+    phi2_val = last_solver.phi(i, 2, 1);
+    
+    % Compute local fission source
+    fission_fast  = nu_sigf_lib(m_C, 1) * phi1_val;
+    fission_therm = nu_sigf_lib(m_C, 2) * phi2_val;
+    
+    % Map back to the full 2D grid
+    power_density(k_full) = fission_fast + fission_therm;
+end
+
+% 3. Average the power over the N x N sub-cells to get assembly power
+N_finest = N_refine(end);
+assembly_power = zeros(17, 17);
+
+for row = 1:17
+    for col = 1:17
+        % Map the 17x17 assembly grid to the (17*N)x(17*N) fine mesh
+        row_idx = (row - 1) * N_finest + 1 : row * N_finest;
+        col_idx = (col - 1) * N_finest + 1 : col * N_finest;
+        
+        % Extract the sub-grid block and average its power
+        block_power = power_density(row_idx, col_idx);
+        assembly_power(row, col) = mean(block_power(:));
+    end
+end
+
+% 4. Normalize so the average active assembly power equals 1.0
+active_assemblies = (assembly_mat > 0);
+avg_core_power = mean(assembly_power(active_assemblies));
+relative_power = assembly_power ./ avg_core_power;
+
+% Mask the reflector/outside nodes with NaN so they appear blank on the plot
+relative_power(~active_assemblies) = NaN;
+
+% 5. Create the graphic
+figure('Name', 'BIBLIS Relative Assembly Power', 'Color', 'w', ...
+       'Position', [100, 100, 700, 600]);
+   
+% Plot a 2D heatmap 
+imagesc(relative_power, 'AlphaData', ~isnan(relative_power));
+axis image;          % Force square pixels
+colormap jet;    % Standard MATLAB colormap
+set(gca, 'Color', [0.9 0.9 0.9]); % Light grey background for empty regions
+
+% Add colorbar and labels
+c = colorbar;
+c.Label.String = 'Relative Assembly Power';
+c.Label.FontSize = 11;
+title('BIBLIS Assembly-Averaged Power Distribution');
+xlabel('Assembly Column');
+ylabel('Assembly Row');
+xticks(1:17); yticks(1:17);
+
+% Overlay the exact numerical values onto the heatmap
+for row = 1:17
+    for col = 1:17
+        if active_assemblies(row, col)
+            % Determine text color based on background intensity for contrast
+            if relative_power(row, col) > 1.2 || relative_power(row, col) < 0.3
+                text_color = 'w';
+            else
+                text_color = 'k';
+            end
+            
+            text(col, row, sprintf('%.3f', relative_power(row, col)), ...
+                'HorizontalAlignment', 'center', ...
+                'VerticalAlignment', 'middle', ...
+                'FontSize', 7, 'Color', text_color, 'FontWeight', 'bold');
+        end
+    end
+end
+
+%% ========================================================================
+%  9. COMPARISON PLOT ANALOGOUS TO ARTICLE FIGURE 6
+% =========================================================================
+fprintf('\nGenerating Figure 6 analogue...\n');
+
+% Choose which refinement level to compare against the reference
+% Let's use the second-to-last level (N=4) against the finest level (N=5)
+compare_idx = n_levels - 1; 
+N_compare   = N_refine(compare_idx);
+
+test_power = power_history(:, :, compare_idx);
+ref_power  = power_history(:, :, end);
+active_assemblies = (assembly_mat > 0);
+
+figure('Name', sprintf('Figure 6 Analogue: N=%d vs Reference', N_compare), ...
+       'Color', 'w', 'Position', [150, 150, 900, 850]);
+hold on;
+
+% Remove the underlying background axes
+axis equal off;
+
+% Add the title mimicking the article's comparison structure
+title(sprintf('BIBLIS Assembly-Averaged Power Distribution\nTop: FDM N=%d  |  Bottom: FDM Reference (N=%d)', ...
+      N_compare, N_refine(end)), 'FontSize', 12, 'FontWeight', 'bold');
+
+% Loop through the grid and print the stacked values
+for row = 1:17
+    for col = 1:17
+        if active_assemblies(row, col)
+            % Y-coordinate inverted so row 1 is visually at the top of the screen
+            x_c = col;
+            y_c = 18 - row; 
+            
+            % Draw a faint grey box for the assembly boundary
+            x0 = x_c - 0.5; x1 = x_c + 0.5;
+            y0 = y_c - 0.5; y1 = y_c + 0.5;
+            patch('XData', [x0 x1 x1 x0], 'YData', [y0 y0 y1 y1], ...
+                  'FaceColor', 'none', 'EdgeColor', [0.8 0.8 0.8], 'LineWidth', 0.5);
+            
+            % Get the two values to compare
+            val_top = test_power(row, col);
+            val_bot = ref_power(row, col);
+            
+            % Print top value (Current Mesh) in Blue for distinction
+            text(x_c, y_c + 0.20, sprintf('%.4f', val_top), ...
+                'HorizontalAlignment', 'center', ...
+                'VerticalAlignment', 'middle', ...
+                'FontSize', 7, 'Color', 'b', 'FontWeight', 'bold');
+            
+            % Print bottom value (Reference Mesh) in Black
+            text(x_c, y_c - 0.20, sprintf('%.4f', val_bot), ...
+                'HorizontalAlignment', 'center', ...
+                'VerticalAlignment', 'middle', ...
+                'FontSize', 7, 'Color', 'k');
+        end
+    end
+end
+
+% Lock the visual boundaries tightly around the core
+xlim([0.5, 17.5]);
+ylim([0.5, 17.5]);
+
+%% ========================================================================
+%  10. NORMALIZED LOWER-RIGHT QUADRANT COMPARISON (ARTICLE VS. MATLAB)
+% =========================================================================
+fprintf('\nGenerating Normalized Lower-Right Quadrant Comparison...\n');
+
+% 1. Extract the ANM 4x4 reference data from the article (Figure 6)
+% This represents the active core from the center (y=9, x=9) moving downwards and rightwards.
+anm_full = NaN(17, 17);
+
+% Transcribed bottom rows of Figure 6 (Analytic Nodal Method values)
+% These correspond to global rows 9 through 16 in the 17x17 grid.
+anm_data = {
+    [1.0909, 1.1015, 1.2426, 1.2205, 1.0886, 0.9820, 1.0947, 1.0145], ... % global row 9 (center)
+    [1.1015, 1.1174, 1.1341, 1.2235, 1.0677, 1.0318, 1.0717, 0.9705], ... % global row 10
+    [1.2426, 1.1341, 1.1221, 1.1050, 1.1199, 0.9236, 0.9309, 0.8245], ... % global row 11
+    [1.2205, 1.2235, 1.1050, 1.1607, 1.0387, 0.9501, 0.7651, 0.5456], ... % global row 12
+    [1.0886, 1.0677, 1.1199, 1.0387, 1.1226, 0.9931, 0.8746],         ... % global row 13
+    [0.9820, 1.0318, 0.9236, 0.9501, 0.9931, 1.1997, 0.6845],         ... % global row 14
+    [1.0947, 1.0718, 0.9309, 0.7651, 0.8746, 0.6845],                 ... % global row 15
+    [1.0145, 0.9705, 0.8245, 0.5456]                                      % global row 16
+};
+
+% Map the data to the Lower-Right quadrant of the 17x17 grid
+for i = 1:8
+    global_row = 8 + i; 
+    row_vals = anm_data{i};
+    anm_full(global_row, 9 : 8 + length(row_vals)) = row_vals;
+end
+
+% 2. Normalize both datasets by their global maximum values
+anm_max = max(anm_full(:));
+anm_norm = anm_full / anm_max;
+
+my_power = power_history(:, :, end); % Use finest mesh (N=5)
+my_power(~active_assemblies) = NaN;
+my_max = max(my_power(:));
+my_norm = my_power / my_max;
+
+% 3. Create the side-by-side figure
+figure('Name', 'Lower-Right Quadrant Comparison', 'Color', 'w', ...
+       'Position', [100, 150, 1200, 550]);
+cmap = turbo(256);
+
+% --- Subplot 1: Article Data (ANM 4x4) ---
+subplot(1, 2, 1); 
+hold on; axis equal off;
+title('Article ANM 4x4 (Normalized)', 'FontSize', 14, 'FontWeight', 'bold');
+
+for global_row = 9:17
+    for global_col = 9:17
+        if active_assemblies(global_row, global_col) && ~isnan(anm_norm(global_row, global_col))
+            val = anm_norm(global_row, global_col);
+            color_idx = max(1, min(256, round(val * 255) + 1));
+            
+            % Calculate local subplot coordinates
+            local_col = global_col - 8;
+            local_row = global_row - 8;
+            
+            % Set coordinates so the center (local_row 1) is physically at the top
+            x_center = local_col;
+            y_center = 10 - local_row; 
+            
+            x0 = x_center - 0.5; x1 = x_center + 0.5;
+            y0 = y_center - 0.5; y1 = y_center + 0.5;
+            
+            patch('XData', [x0 x1 x1 x0], 'YData', [y0 y0 y1 y1], ...
+                  'FaceColor', cmap(color_idx, :), 'EdgeColor', 'k');
+                  
+            text(x_center, y_center, sprintf('%.3f', val), ...
+                'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', ...
+                'FontSize', 8, 'Color', 'k', 'FontWeight', 'bold', ...
+                'BackgroundColor', [1 1 1 0.7]);
+        end
+    end
+end
+xlim([0.5, 9.5]); ylim([0.5, 9.5]);
+
+% --- Subplot 2: MATLAB Solver Data (N=5) ---
+subplot(1, 2, 2); 
+hold on; axis equal off;
+title('Your MATLAB FDM N=5 (Normalized)', 'FontSize', 14, 'FontWeight', 'bold');
+
+for global_row = 9:17
+    for global_col = 9:17
+        if active_assemblies(global_row, global_col) && ~isnan(my_norm(global_row, global_col))
+            val = my_norm(global_row, global_col);
+            color_idx = max(1, min(256, round(val * 255) + 1));
+            
+            % Calculate local subplot coordinates
+            local_col = global_col - 8;
+            local_row = global_row - 8;
+            
+            % Set coordinates so the center (local_row 1) is physically at the top
+            x_center = local_col;
+            y_center = 10 - local_row; 
+            
+            x0 = x_center - 0.5; x1 = x_center + 0.5;
+            y0 = y_center - 0.5; y1 = y_center + 0.5;
+            
+            patch('XData', [x0 x1 x1 x0], 'YData', [y0 y0 y1 y1], ...
+                  'FaceColor', cmap(color_idx, :), 'EdgeColor', 'k');
+                  
+            text(x_center, y_center, sprintf('%.3f', val), ...
+                'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', ...
+                'FontSize', 8, 'Color', 'k', 'FontWeight', 'bold', ...
+                'BackgroundColor', [1 1 1 0.7]);
+        end
+    end
+end
+xlim([0.5, 9.5]); ylim([0.5, 9.5]);
+
+% --- Add a single shared colorbar on the right ---
+colormap jet; caxis([0, 1]);
+cb = colorbar('Position', [0.93 0.15 0.015 0.7]);
+cb.Label.String = 'Normalized Power Distribution';
+cb.FontSize = 11;
+
+%% ========================================================================
+%  11. RELATIVE ERROR MAP (ANALOGOUS TO FEMFFUSION FIGURE 5)
+% =========================================================================
+fprintf('\nGenerating Figure 5 Analogue (Relative Error %%)...\n');
+
+% 1. Extract the coarse test power (N=1) and fine reference power (N=5)
+P_test = power_history(:, :, 1); % Or pick whichever N level you want to test
+P_ref  = power_history(:, :, end);
+
+% 2. Calculate the Relative Percentage Error
+% Note: We add a tiny eps to the denominator to prevent division by zero in empty cells
+error_pct = 100 * abs(P_test - P_ref) ./ (P_ref + eps);
+
+% Mask the inactive assemblies with NaN for a clean plot
+active_assemblies = (assembly_mat > 0);
+error_pct(~active_assemblies) = NaN;
+
+% 3. Create the plot
+figure('Name', 'Relative Power Error (%)', 'Color', 'w', ...
+       'Position', [200, 200, 700, 600]);
+
+imagesc(error_pct, 'AlphaData', ~isnan(error_pct));
+axis image;          
+colormap jet;
+
+% Force the color limit from 0 to the maximum error to mimic the report's scale
+max_err = max(error_pct(active_assemblies));
+clim([0, max_err]); % Use caxis([0, max_err]) for older MATLAB versions
+
+c = colorbar;
+c.Label.String = 'Relative Error (%)';
+c.Label.FontSize = 11;
+title(sprintf('Relative Error in Assembly Power\nFDM N=%d vs Reference N=%d', ...
+      N_refine(1), N_refine(end)), 'FontWeight', 'bold');
+xlabel('Assembly Column');
+ylabel('Assembly Row');
+xticks(1:17); yticks(1:17);

@@ -1,0 +1,69 @@
+classdef Materials
+    %Materials Physical properties manager
+    %   Handles the physisical properties of each region and energy
+    %   group.
+    properties
+        % General dimensions
+        num_materials      (1,1) double % Number of unique materials
+        num_groups         (1,1) double % Number of energy groups (G)
+        
+        % Material distribution
+        region_materials   (:,1) double % Material ID assigned to each spatial region
+
+        % Libraries: 2D arrays (material ID (m), energy group (g))
+        D_lib              (:,:) double % Diffusion coefficients 
+        sigma_a_lib        (:,:) double % Absorption cross-sections 
+        nu_sigma_f_lib     (:,:) double % Fission cross-sections times neutrons per fission
+        chi_lib            (:,:) double % Fission spectrum (fraction of neutrons born in group g)
+        
+        % Scattering Library: 3D array (material ID (m), g_from, g_to)
+        sigma_s_lib        (:,:,:) double % Scattering matrix
+    end
+    
+    methods
+        function obj = Materials(region_materials, D_lib, sigma_a_lib, nu_sigma_f_lib, chi_lib, sigma_s_lib)
+            % 2D array dimension validation (num_materials x num_groups)
+            same_sizes = isequal(size(D_lib), size(sigma_a_lib), size(nu_sigma_f_lib), size(chi_lib));
+            if ~same_sizes
+                error("Invalid input: D_lib, sigma_a_lib, nu_sigma_f_lib, and chi_lib must have dimensions (num_materials x num_groups).")
+            end
+
+            [n_mat, n_grp] = size(D_lib);
+
+            % 3D scattering matrix dimension validation (num_materials x num_groups x num_groups)
+            actual_size = ones(1, 3);
+            actual_size(1:length(size(sigma_s_lib))) = size(sigma_s_lib);
+            if ~isequal(actual_size, [n_mat, n_grp, n_grp])
+                error("Invalid input: sigma_s_lib must have dimensions (num_materials x num_groups x num_groups).")
+            end
+            % Force 3D shape internally so all indexing downstream works correctly
+            sigma_s_lib = reshape(sigma_s_lib, n_mat, n_grp, n_grp);          
+            
+            % Store inputs
+            obj.num_materials = n_mat;
+            obj.num_groups = n_grp;
+            obj.region_materials = region_materials;
+            
+            obj.D_lib = D_lib;
+            obj.sigma_a_lib = sigma_a_lib;
+            obj.nu_sigma_f_lib = nu_sigma_f_lib;
+            obj.chi_lib = chi_lib;
+            obj.sigma_s_lib = sigma_s_lib;
+        end
+
+        function sigma_r_g = getRemovalCrossSection(obj, mat_id_vec, g)
+            % Helper function to calculate the removal cross-section
+            % It handles both vectors and scalars
+            % Sigma_r,g = Sigma_a,g + Sum_{h != g} (Sigma_s, g -> h) I NEED
+            % TO CLARIFY THE MATH
+            
+            sigma_a_vec = obj.sigma_a_lib(mat_id_vec, g);
+            
+            % Total scattering out of group g (sum over all destination groups h, except g itself)
+            g_others = setdiff(1:obj.num_groups, g);
+            scatter_out = sum(obj.sigma_s_lib(mat_id_vec, g, g_others), 3);  % sum over dim 3 (g_to)
+            scatter_out_vec = scatter_out(:);            
+            sigma_r_g = sigma_a_vec + scatter_out_vec;
+        end
+    end
+end
