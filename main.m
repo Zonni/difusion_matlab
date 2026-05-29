@@ -1,5 +1,5 @@
 clear; close all; clc;
-data_juanjo;
+input;
 % Save root_path to construc paths easily
 root_path = fileparts(mfilename('fullpath'));
 if method == "FEM"
