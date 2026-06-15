@@ -1,0 +1,117 @@
+% Implementation of the FDM for solving the 1D 1g neutron diffusion
+% equation
+classdef Problem_1D_1eg_FDM    
+    properties
+        % Input attributes
+        mesh Mesh_1D_FDM
+        materials Materials_1D_1eg_FDM
+        
+        % Computed attributes
+        A (:,:) double
+        Q (:,:) double
+        phi (:,:) double
+        keff (:,1) double
+        nodes_vec_boundaries (:,1) double % vector of the x coordinates of all nodes plus the boundaries of the reactor
+    end
+    
+    methods
+        function obj = Problem_1D_1eg_FDM(mesh, materials)            
+            obj.mesh = mesh;
+            obj.materials = materials;
+
+            % Add the extrem nodes in order to have the full vector of
+            % nodes
+            %left_boundary = obj.mesh.region_boundaries(1);
+            %right_boundary = obj.mesh.region_boundaries(end);
+            %obj.nodes_vec_boundaries = [left_boundary; obj.mesh.nodes_vec; right_boundary];
+        end
+        
+        function obj = assembleMatrices(obj)
+            % 1. Parameter extraction
+            nNodes = obj.mesh.nNodes;
+            
+            % Map each node to its region
+            reg_idx = obj.mesh.node_region_idx; 
+            
+            % Map physical properties from the Materials object to every node
+            D_vec = obj.materials.D_lib(reg_idx);
+            SigA_vec = obj.materials.sigma_a_lib(reg_idx);
+            NuSigF_vec = obj.materials.nu_sigma_f_lib(reg_idx);
+            
+            % Map the step size (delta_x) from the Mesh object to every node
+            Delta_vec = obj.mesh.delta_region(reg_idx);
+            
+            % 2. Calculate Coupling Coefficients (d)
+            % d_i couples node i and i+1.
+            % Formula: 2*D1*D2 / (dx2*D1 + dx1*D2)
+            D_curr = D_vec(1:end-1);
+            D_next = D_vec(2:end);   
+            dx_curr = Delta_vec(1:end-1);
+            dx_next = Delta_vec(2:end);
+            
+            % Vectorized coupling coefficients
+            d_vec = (2 .* D_curr .* D_next) ./ (dx_next .* D_curr + dx_curr .* D_next);
+            
+            % 3. Calculate Boundary Leakage Coefficients (L)
+            % Mesh-Centered Zero Flux: L = 2*D / dx
+            L_left  = (2 * D_vec(1)) / Delta_vec(1);
+            L_right = (2 * D_vec(end)) / Delta_vec(end);
+            
+            % 4. Build Matrix A (Loss/Transport)
+            % A_ii = d_i phi_i - \Delta x_i sigma_i phi_i
+            diag_A = -Delta_vec .* SigA_vec;
+            diag_A = diag_A + [0; d_vec] - [d_vec; 0];
+            
+            % Boundary conditions
+            diag_A(1)   = diag_A(1) - L_left;
+            diag_A(end) = diag_A(end) - L_right;
+            
+            % Tridiagonal setup
+            padded_upper = [0; d_vec];
+            padded_lower = [d_vec; 0];
+            obj.A = spdiags([padded_lower, diag_A, padded_upper], -1:1, nNodes, nNodes);
+            
+            % 5. Build Matrix Q (Fission/Production)
+            diag_Q = -Delta_vec .* NuSigF_vec;
+            obj.Q = spdiags(diag_Q, 0, nNodes, nNodes);
+        end
+        
+        function obj = solveEigenvalues(obj, nm)
+            % Solve Q*phi = k*A*phi
+            [V, D_eigen] = eigs(obj.Q, obj.A, nm, 'largestabs');
+            
+            obj.keff = diag(D_eigen);
+            
+            % Fix sign (ensure flux is positive)
+            sinais = sign(sum(V(1:min(5, end), :), 1)); 
+            V = V .* sinais;
+            
+            % Normalize each mode to max = 1.0
+            V_norm = V ./ max(V);
+
+            % Add the boundary condition nodes to each mode (two rows more
+            % per mode)
+            obj.phi = zeros(size(V_norm) + [2, 0]); % Add the two boundary nodes
+            obj.phi(1,:) = 0;
+            obj.phi(end,:) = 0;
+            obj.phi(2:end-1,:) = V ./ max(V);
+        end
+        
+        function displayProblem(obj)
+            fprintf('=================\n  PROBLEM DATA  \n=================\n\n');
+            fprintf('K-effective (Fundamental): %.5f\n', obj.keff(1));
+            if length(obj.keff) > 1
+                fprintf('K-effective (Harmonics): ');
+                fprintf('%.5f ', obj.keff(2:end));
+                fprintf('\n');
+            end
+        end
+
+        function plotPhi(obj)
+            figure
+            hold on
+            grid on
+            plot(obj.nodes_vec_boundaries,obj.phi);
+        end
+    end
+end

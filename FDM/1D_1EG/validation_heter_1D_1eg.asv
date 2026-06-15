@@ -1,0 +1,227 @@
+% =========================================================================
+% SCRIPT: Comparison FDM (Ruben) vs FDM (Jaime) vs FEM Degree 3 (Jaime)
+% PROBLEM: 1G Heterogeneous (Reflector - Core - Reflector)
+% =========================================================================
+addpath('../..') 
+clearvars; close all; clc;
+
+%% 1. PROBLEM PARAMETERS (1G Heterogeneous)
+L = 350;
+a = 25;   % Interface 1 (Reflector -> Core)
+b = 325;  % Interface 2 (Core -> Reflector)
+FEM_DEGREE = 4;
+
+% Array of different mesh sizes (Degrees of Freedom) to test
+DOF_array = [43, 100, 500, 1000]; 
+
+% Physical properties
+% Index 1 = Reflector, Index 2 = Homogeneous Fuel
+D_array       = [1.446, 0.776];
+SigA_array    = [0.0077, 0.0244];
+NuSigF_array  = [0.0000, 0.0260];
+
+%% 2. EXACT ANALYTICAL SOLUTION
+fprintf('--- CALCULATING EXACT ANALYTICAL SOLUTION ---\n');
+D1 = D_array(1);
+Sig_a1 = SigA_array(1);
+D2 = D_array(2);
+Sig_a2 = SigA_array(2);
+nuSig_f2 = NuSigF_array(2);
+
+% Find k_eff using fzero
+k_guess = nuSig_f2 / Sig_a2; 
+options = optimset('Display', 'off', 'TolX', 1e-12);
+k_analytic = fzero(@(k) det_continuity_matrix(k, a, b, L, D1, Sig_a1, D2, Sig_a2, nuSig_f2), k_guess, options);
+
+% Rebuild matrix with exact k_eff to find coefficients
+[~, M] = det_continuity_matrix(k_analytic, a, b, L, D1, Sig_a1, D2, Sig_a2, nuSig_f2);
+[~, ~, V] = svd(M);
+coeffs = V(:, end); % Null space
+
+A1 = real(coeffs(1));
+A2 = real(coeffs(2));
+B2 = real(coeffs(3)); A3 = real(coeffs(4));
+
+% Define kappa values
+kappa1 = sqrt(Sig_a1 / D1);
+kappa2 = sqrt((nuSig_f2/k_analytic - Sig_a2) / D2);
+
+% Ensure central flux is positive
+phi_center = A2 * sin(kappa2 * (a+b)/2) + B2 * cos(kappa2 * (a+b)/2);
+if phi_center < 0
+    A1 = -A1; A2 = -A2; B2 = -B2; A3 = -A3;
+end
+
+% Function to evaluate exact analytical flux
+phi_analytic_func = @(x) eval_analytical_flux(x, A1, A2, B2, A3, kappa1, kappa2, a, b, L);
+
+fprintf('Analytic K-eff: %.10f\n\n', k_analytic);
+
+%% START LOOP OVER MESH SIZES
+for target_dof = DOF_array
+    fprintf('--- STARTING VALIDATION FOR DOF = %d ---\n', target_dof);
+    
+    %% 3. SOLUTION A: MESH-CENTERED FDM (RUBEN)
+    N_Ruben = target_dof; % cells
+    
+    % Create material map based on cell centers
+    x_centers_R = linspace(L/(2*N_Ruben), L - L/(2*N_Ruben), N_Ruben);
+    material_map_R = ones(1, N_Ruben); % Default to Reflector (1)
+    material_map_R(x_centers_R >= a & x_centers_R <= b) = 2; % Set Core (2)
+    
+    meshR = Mesh_1D_FDM(L, 1, N_Ruben);
+    % NOTE: Ensure Ruben's class accepts the material_map_R array
+    matsR = Materials_1D_1eg_FDM(material_map_R, D_array, SigA_array, NuSigF_array); 
+    probR = Problem_1D_1eg_FDM(meshR, matsR);
+    probR = probR.assembleMatrices().solveEigenvalues(1);
+    
+    k_eff_R = probR.keff(1);
+    size_R = size(probR.A,1);
+    
+    % Extract flux
+    phi_num_R = probR.phi(:, 1);
+    x_R = probR.nodes_vec_boundaries;
+    
+    % Enforce positive flux and normalize
+    if phi_num_R(round(end/2)) < 0, phi_num_R = -phi_num_R; end
+    phi_num_R = phi_num_R / max(abs(phi_num_R));
+    
+    phi_ana_R = phi_analytic_func(x_R);
+    phi_ana_R = phi_ana_R / max(abs(phi_ana_R));
+    
+    rmse_R = rmse(phi_ana_R, phi_num_R);
+    
+    %% 4. SOLUTION B: POINT-CENTERED FDM (JAIME)
+    N_J_FDM = target_dof; % points
+    cell_sizes_fdm = (L/N_J_FDM) * ones(1, N_J_FDM);
+    cell_sizes_fdm(end) = L - sum(cell_sizes_fdm(1:end-1));
+    
+    % Create material map based on cell centers
+    x_centers_J = cumsum(cell_sizes_fdm) - cell_sizes_fdm/2;
+    material_map_fdm = ones(1, N_J_FDM);
+    material_map_fdm(x_centers_J >= a & x_centers_J <= b) = 2;
+    
+    % Initialize Jaime's classes for FDM
+    meshJ_FDM = Malla1D(L, N_J_FDM, 1, cell_sizes_fdm);
+    materialsJ_FDM = Materiales1D1g(material_map_fdm, D_array, SigA_array, NuSigF_array, meshJ_FDM);
+    probJ_FDM = ProblemaDifusion1D1g(meshJ_FDM, materialsJ_FDM, []);
+    probJ_FDM = probJ_FDM.ensamblar_matrices_fdm().aplicar_cc().resolver_autovalor(1);
+    
+    k_eff_J_FDM = probJ_FDM.keff(1);
+    size_J_FDM = size(probJ_FDM.A,1);
+    
+    % Extract flux (removing boundaries to match Jaime's FDM interior logic)
+    phi_num_J_FDM = probJ_FDM.phi_inc(2:end-1, 1);
+    x_full_fdm = linspace(0, L, N_J_FDM)'; 
+    x_J_FDM = x_full_fdm(2:end-1); 
+    
+    % Enforce positive flux and normalize
+    if phi_num_J_FDM(round(end/2)) < 0, phi_num_J_FDM = -phi_num_J_FDM; end
+    phi_num_J_FDM = phi_num_J_FDM / max(abs(phi_num_J_FDM));
+    
+    phi_ana_J_FDM = phi_analytic_func(x_J_FDM);
+    phi_ana_J_FDM = phi_ana_J_FDM / max(abs(phi_ana_J_FDM));
+    
+    rmse_J_FDM = rmse(phi_ana_J_FDM, phi_num_J_FDM);
+    
+    %% 5. SOLUTION C: FEM DEGREE 3 (JAIME)
+    % Element calculation
+    N_FEM = max(1, round((target_dof - 1) / FEM_DEGREE)); 
+    cell_sizes = (L/N_FEM) * ones(1, N_FEM);
+    cell_sizes(end) = L - sum(cell_sizes(1:end-1)); 
+    
+    % Create material map based on element centers
+    x_centers_FEM = cumsum(cell_sizes) - cell_sizes/2;
+    material_map_FEM = ones(1, N_FEM);
+    material_map_FEM(x_centers_FEM >= a & x_centers_FEM <= b) = 2;
+    
+    % Initialize Jaime's classes for FEM
+    meshJ_FEM = Malla1D(L, N_FEM, FEM_DEGREE, cell_sizes);
+    materialsJ_FEM = Materiales1D1g(material_map_FEM, D_array, SigA_array, NuSigF_array, meshJ_FEM);
+    elementJ = ElementoFinito(FEM_DEGREE);
+    probJ_FEM = ProblemaDifusion1D1g(meshJ_FEM, materialsJ_FEM, elementJ);
+    probJ_FEM = probJ_FEM.ensamblar_matrices_fem().aplicar_cc().resolver_autovalor(1);
+    
+    k_eff_F = probJ_FEM.keff(1);
+    size_F = size(probJ_FEM.A, 1);
+    
+    % Extract flux 
+    phi_num_F = probJ_FEM.phi_inc(:, 1);
+    x_F = meshJ_FEM.x_nodos(:);
+    
+    % Enforce positive flux and normalize
+    if phi_num_F(round(end/2)) < 0, phi_num_F = -phi_num_F; end
+    phi_num_F = phi_num_F / max(abs(phi_num_F));
+    
+    phi_ana_F = phi_analytic_func(x_F);
+    phi_ana_F = phi_ana_F / max(abs(phi_ana_F));
+    
+    rmse_F = rmse(phi_ana_F, phi_num_F);
+    
+    %% 6. PRINT RESULTS
+    err_pcm_R = abs(k_analytic - k_eff_R) * 1e5;
+    err_pcm_J_FDM = abs(k_analytic - k_eff_J_FDM) * 1e5;
+    err_pcm_F = abs(k_analytic - k_eff_F) * 1e5;
+    
+    fprintf('========================================================================================\n');
+    fprintf('                      DIRECT COMPARISON (DOF = %d) - HETEROGENEOUS                      \n', target_dof);
+    fprintf('========================================================================================\n');
+    fprintf('%-18s | %-18s | %-18s | %-20s\n', 'Metric', 'FDM (Ruben)', 'FDM (Jaime)', 'FEM Deg 3 (Jaime)');
+    fprintf('-------------------|--------------------|--------------------|------------------------\n');
+    fprintf('%-18s | %-18d | %-18d | %-20d\n', 'Matrix Size', size_R, size_J_FDM, size_F);
+    fprintf('%-18s | %-18.8f | %-18.8f | %-20.8f\n', 'Numeric K-eff', k_eff_R, k_eff_J_FDM, k_eff_F);
+    fprintf('%-18s | %-18.3f | %-18.3f | %-20.3f\n', 'K-eff Err (pcm)', err_pcm_R, err_pcm_J_FDM, err_pcm_F);
+    fprintf('%-18s | %-18.6e | %-18.6e | %-20.6e\n', 'Absolute RMSE', rmse_R, rmse_J_FDM, rmse_F);
+    fprintf('========================================================================================\n\n');
+    
+    %% 7. COMPARATIVE PLOTS
+    figure('Name', sprintf('Validation Heterogeneous DOF=%d', target_dof), 'Color', 'w', 'Position', [100, 100, 800, 700]);
+    hold on; grid on;
+    
+    plot(x_R, phi_ana_R, 'k-', 'LineWidth', 2, 'DisplayName', 'Analytic Solution');
+    plot(x_R, phi_num_R, 'b--o', 'LineWidth', 1.5, 'MarkerSize', 5, 'DisplayName', 'FDM (Ruben)');
+    plot(x_J_FDM, phi_num_J_FDM, 'g--s', 'LineWidth', 1.5, 'MarkerSize', 5, 'DisplayName', 'FDM (Jaime)');
+    plot(x_F, phi_num_F, 'r--x', 'LineWidth', 1.5, 'MarkerSize', 6, 'DisplayName', 'FEM Deg 3 (Jaime)');
+    
+    % Add interface lines
+    xline(a, 'k:', 'LineWidth', 1.5, 'HandleVisibility', 'off');
+    xline(b, 'k:', 'LineWidth', 1.5, 'HandleVisibility', 'off');
+    
+    xlabel('Position x (cm)');
+    ylabel('Normalized Flux \phi(x)');
+    title(sprintf('Flux Shape Comparison (1G Heterogeneous, DOF=%d)', target_dof));
+    legend('Location', 'best');
+end
+
+% =========================================================================
+% LOCAL FUNCTIONS FOR ANALYTICAL SOLUTION
+% =========================================================================
+
+function [detM, M] = det_continuity_matrix(k, a, b, L, D1, Sig_a1, D2, Sig_a2, nuSig_f2)
+    kappa1 = sqrt(Sig_a1 / D1);
+    if (nuSig_f2/k - Sig_a2) <= 0
+        detM = 1e6; M = eye(4); return;
+    end
+    kappa2 = sqrt((nuSig_f2/k - Sig_a2) / D2);
+    
+    M = zeros(4,4);
+    M(1,:) = [sinh(kappa1*a), -sin(kappa2*a), -cos(kappa2*a), 0];
+    M(2,:) = [D1*kappa1*cosh(kappa1*a), -D2*kappa2*cos(kappa2*a), D2*kappa2*sin(kappa2*a), 0];
+    M(3,:) = [0, sin(kappa2*b), cos(kappa2*b), -sinh(kappa1*(L-b))];
+    M(4,:) = [0, D2*kappa2*cos(kappa2*b), -D2*kappa2*sin(kappa2*b), D1*kappa1*cosh(kappa1*(L-b))];
+    detM = det(M);
+end
+
+function phi_val = eval_analytical_flux(x_array, A1, A2, B2, A3, kappa1, kappa2, a, b, L)
+    phi_val = zeros(size(x_array));
+    for i = 1:length(x_array)
+        x = x_array(i);
+        if x < a
+            phi_val(i) = A1 * sinh(kappa1 * x);
+        elseif x <= b
+            phi_val(i) = A2 * sin(kappa2 * x) + B2 * cos(kappa2 * x);
+        else
+            phi_val(i) = A3 * sinh(kappa1 * (L - x));
+        end
+    end
+end

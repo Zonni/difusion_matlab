@@ -1,0 +1,105 @@
+classdef NuclearData_2D
+    %NUCLEARDATA_2D Nuclear material properties for 2D multigroup diffusion.
+    %   region_materials is a (Ny x Nx) integer matrix that maps each mesh
+    %   cell to a material index.  A value of 0 marks a cell that lies
+    %   outside the active reactor region; such cells are skipped during
+    %   matrix assembly and their interfaces are treated as zero-flux
+    %   (vacuum) boundaries.
+ 
+    properties
+        num_materials   (1,1) double
+        num_groups      (1,1) double
+        region_materials (:,:) double   % (Ny x Nx)  0 = outside reactor
+        n_active_regions (1,1) double
+        active_idx
+        D_lib           (:,:) double    % (material, group)
+        sigma_a_lib     (:,:) double    % (material, group)
+        nu_sigf_lib     (:,:) double    % (material, group)
+        chi_lib         (:,:) double    % (material, group)
+        sigma_s_lib     (:,:,:) double  % (material, g_from, g_to)
+    end
+ 
+    methods
+        function obj = NuclearData_2D(region_materials, D_lib, sigma_a_lib, ...
+                                      nu_sigf_lib, chi_lib, sigma_s_lib)
+            %NUCLEARDATA_2D Construct the nuclear data manager.
+            %
+            %   Inputs:
+            %       region_materials - (Ny x Nx) integer matrix.
+            %                          0  = outside reactor (void / reflector boundary).
+            %                          >0 = index into the material library.
+            %       D_lib            - (M x G) Diffusion coefficients.
+            %       sigma_a_lib      - (M x G) Macroscopic absorption cross sections.
+            %       nu_sigf_lib      - (M x G) Nu * macroscopic fission cross sections.
+            %       chi_lib          - (M x G) Fission spectrum  (rows must sum to 1).
+            %       sigma_s_lib      - (M x G x G) Scattering matrix
+            %                          sigma_s_lib(mat, g_from, g_to).
+ 
+            [n_mat, n_grp] = size(D_lib);
+ 
+            % Validate library dimensions
+            if ~isequal(size(sigma_a_lib), [n_mat, n_grp]) || ...
+               ~isequal(size(nu_sigf_lib), [n_mat, n_grp]) || ...
+               ~isequal(size(chi_lib),     [n_mat, n_grp])
+                error("D_lib, sigma_a_lib, nu_sigf_lib, and chi_lib must " + ...
+                      "all be (%d x %d).", n_mat, n_grp);
+            end
+
+            if size(sigma_s_lib, 1) ~= n_mat || ...
+               size(sigma_s_lib, 2) ~= n_grp || ...
+               size(sigma_s_lib, 3) ~= n_grp
+                error("sigma_s_lib must be (%d x %d x %d).", n_mat, n_grp, n_grp);
+            end
+ 
+            % Validate material indices in the grid
+            max_idx = max(region_materials(:));
+            if max_idx > n_mat
+                error("region_materials references material index %d, but " + ...
+                      "only %d materials are defined in the library.", max_idx, n_mat);
+            end
+            if any(region_materials(:) < 0)
+                error("region_materials must be non-negative (0 = outside reactor).");
+            end
+ 
+            obj.num_materials = n_mat;
+            obj.num_groups = n_grp;
+            obj.region_materials = region_materials;
+            obj.n_active_regions = nnz(region_materials);
+            obj.D_lib = D_lib;
+            obj.sigma_a_lib = sigma_a_lib;
+            obj.nu_sigf_lib = nu_sigf_lib;
+            obj.chi_lib = chi_lib;
+            obj.sigma_s_lib = reshape(sigma_s_lib, n_mat, n_grp, n_grp);
+
+            % Get n_
+        end
+ 
+        function sigma_r = getRemovalCrossSection(obj, mat_id, g)
+            %GETREMOVALCROSSSECTION sigma_a(g) + sum_{h~=g} sigma_s(g->h).
+            %
+            %   Inputs:
+            %       mat_id - Scalar material index (must be > 0).
+            %       g      - Energy group index.
+ 
+            g_others = setdiff(1:obj.num_groups, g);
+            sigma_r = obj.sigma_a_lib(mat_id, g) + ...
+                        sum(obj.sigma_s_lib(mat_id, g, g_others));  % FROM g, TO h
+        end
+ 
+        function displayMaterials(obj)
+            %DISPLAYMATERIALS Prints a summary of the nuclear data library.
+            fprintf('======================\n  MATERIALS DATA  \n======================\n\n');
+            fprintf('Unique Materials : %d\n',   obj.num_materials);
+            fprintf('Energy Groups    : %d\n\n', obj.num_groups);
+            for m = 1:obj.num_materials
+                fprintf('--- Material %d ---\n', m);
+                fprintf('  D       : '); fprintf('%8.4f  ', obj.D_lib(m,:));       fprintf('\n');
+                fprintf('  sigma_a : '); fprintf('%8.4f  ', obj.sigma_a_lib(m,:)); fprintf('\n');
+                fprintf('  nu_sigf : '); fprintf('%8.4f  ', obj.nu_sigf_lib(m,:)); fprintf('\n');
+                fprintf('  chi     : '); fprintf('%8.4f  ', obj.chi_lib(m,:));     fprintf('\n');
+            end
+            fprintf('\nMaterial grid (0 = outside reactor):\n');
+            disp(obj.region_materials);
+        end
+    end
+end

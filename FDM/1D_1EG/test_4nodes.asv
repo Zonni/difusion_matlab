@@ -1,0 +1,110 @@
+function test_4nodes()
+
+    % Material properties
+    l = 350;
+    D_lib = [1.446; 0.776]; % in cm
+    sigma_a_lib = [0.0077; 0.0244]; % in 1/cm
+    nu_sigma_f_lib = [0; 0.0260]; % Mat 1 has no fission; 1/cm
+    
+    % Cell information
+    Delta_x1 = 25;
+    Delta_x2 = 150;
+    Delta_x3 = 150;
+    Delta_x4 = 25;
+    
+    D1 = D_lib(1);
+    D2 = D_lib(2);
+    D3 = D_lib(2);
+    D4 = D_lib(1);
+    
+    Sigma_a1 = sigma_a_lib(1);
+    Sigma_a2 = sigma_a_lib(2);
+    Sigma_a3 = sigma_a_lib(2);
+    Sigma_a4 = sigma_a_lib(1);
+    
+    nu_sf1 = nu_sigma_f_lib(1);
+    nu_sf2 = nu_sigma_f_lib(2);
+    nu_sf3 = nu_sigma_f_lib(2);
+    nu_sf4 = nu_sigma_f_lib(1);
+    
+    % Coupling Coefficients
+    d1 = 2 * D1 * D2 / (Delta_x2 * D1 + Delta_x1 * D2);
+    d2 = 2 * D2 * D3 / (Delta_x3 * D2 + Delta_x2 * D3);
+    d3 = 2 * D3 * D4 / (Delta_x4 * D3 + Delta_x3 * D4);
+    
+    % Vacuum Boundary conditions
+    l_bound = 2 * D1 / Delta_x1;
+    r_bound = 2 * D4 / Delta_x4;
+    
+    % Matrix Assembly
+    A = zeros(4,4); % Destruction/Leakage Matrix
+    F = zeros(4,4); % Fission Production Matrix
+    
+    % Node 1 (Left Reflector)
+    A(1,1) = d1 + l_bound + Delta_x1*Sigma_a1;
+    A(1,2) = -d1;
+    
+    % Node 2 (Left Core)
+    A(2,1) = -d1;
+    A(2,2) = d1 + d2 + Delta_x2*Sigma_a2;
+    A(2,3) = -d2;
+    
+    % Node 3 (Right Core)
+    A(3,2) = -d2;
+    A(3,3) = +d2 + d3 + Delta_x3*Sigma_a3;
+    A(3,4) = -d3;
+    
+    % Node 4 (Right Reflector)
+    A(4,3) = -d3;
+    A(4,4) = d3 + r_bound + Delta_x4*Sigma_a4;
+    
+    % Assemble Fission Production Matrix (Source Q * Delta_x)
+    F(1,1) = Delta_x1 * nu_sf1;
+    F(2,2) = Delta_x2 * nu_sf2;
+    F(3,3) = Delta_x3 * nu_sf3;
+    F(4,4) = Delta_x4 * nu_sf4;
+    
+    % Solve the Eigenvalue Problem
+    % The system is A * phi = (1/k) * F * phi
+    [V, D_eig] = eig(F, A);
+    
+    % Extract the eigenvalues
+    eigenvalues = diag(D_eig);
+    
+    % Find the dominant eigenvalue (k_eff) and corresponding eigenvector (flux)
+    [k_eff_exact, idx] = max(abs(eigenvalues));
+    phi_exact = V(:, idx);
+    
+    % Normalize the flux so the maximum value is 1 (for easy comparison)
+    phi_exact = phi_exact / max(phi_exact);
+    
+    % Display Results
+    %fprintf('Effective Multiplication Factor (k_eff) = %.5f\n', k_eff_exact);
+    %disp('Normalized Neutron Flux array [phi_1, phi_2, phi_3, phi_4]:');
+    %disp(phi_exact);
+    
+    %% Solver validation
+    region_materials = [1; 2; 2; 1];
+    materials = Materials(region_materials, D_lib, sigma_a_lib, nu_sigma_f_lib);
+    
+    region_lengths = [25; 150; 150; 25];
+    cells_per_region = [1; 1; 1; 1];
+    mesh = Mesh_1D_FDM(region_lengths, cells_per_region);
+    
+    solver = Solver_1D_1EG_FDM(mesh, materials);
+    solver = solver.assembleMatrices().solveEigenvalues(1);
+    
+    k_eff_num = solver.keff;
+    phi_num = solver.phi(2:end-1);
+    
+    A_num = -solver.A;
+    
+    %fprintf('Effective Multiplication Factor (k_eff) = %.5f\n', k_eff_num);
+    %disp('Normalized Neutron Flux array [phi_1, phi_2, phi_3, phi_4]:');
+    %disp(phi_num);
+    
+    %assert(abs(k_eff_exact - k_eff_num) < 1e-12)
+    %assert(all(abs(phi_exact - phi_num) < 1e-12))
+    %assert(all(all(abs(A - A_num) < 1e-12)))
+
+    return;

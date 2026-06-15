@@ -1,0 +1,54 @@
+classdef Mesh_2D_FDM
+    %MESH_2D_FDM Summary of this class goes here
+    %   Detailed explanation goes here
+    
+    properties
+        region_lengths_x
+        region_lengths_y
+        region_boundaries_x
+        region_boundaries_y
+        num_cells
+        cell_centers
+        delta_x
+        delta_y
+    end
+    
+    methods
+        function obj = Mesh_2D_FDM(region_lengths_x,region_lengths_y)
+            %MESH_2D_FDM Construct an instance of this class
+            %   Detailed explanation goes here
+            
+            obj.region_lengths_x = region_lengths_x(:);
+            obj.region_lengths_y = region_lengths_y(:);
+
+            obj.region_boundaries_x = [0; cumsum(obj.region_lengths_x)]
+            obj.region_boundaries_y = [0; cumsum(obj.region_lengths_y)]
+
+            % Get the total number of cells:
+            num_regions_x = length(obj.region_lengths_x);
+            num_regions_y = length(obj.region_lengths_y);
+            obj.num_cells = num_regions_x * num_regions_y;
+            
+            obj.cell_centers = zeros(obj.num_cells, 2);
+            % Get the coordinates of the cells
+            
+
+            for j = 1:num_regions_y
+                obj.cell_centers(j,2) = obj.region_lengths_y(j)/2
+                disp(obj.cell_centers)
+                for i = 1:num_regions_x
+                    obj.cell_centers(i,1) = obj.region_lengths_y(i)/2
+                    disp(obj.cell_centers)
+                end
+            end
+
+        end
+        
+        function outputArg = method1(obj,inputArg)
+            %METHOD1 Summary of this method goes here
+            %   Detailed explanation goes here
+            outputArg = obj.Property1 + inputArg;
+        end
+    end
+end
+

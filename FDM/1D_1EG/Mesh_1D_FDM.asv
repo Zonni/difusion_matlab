@@ -1,0 +1,54 @@
+classdef Mesh_1D_FDM
+    % Geometry manager for 1D slab discretization.
+
+    properties
+        region_lengths    (:,1) double
+        cells_per_region  (:,1) double
+        num_cells         (1,1) double
+        cell_centers      (:,1) double
+        cell_region_idx   (:,1) double
+        delta_x           (:,1) double
+        region_boundaries (:,1) double
+    end
+
+    methods
+        function obj = Mesh_1D_FDM(region_lengths, cells_per_region)
+            % Security size check
+            if ~isequal(size(region_lengths), size(cells_per_region))
+                error("region_lengths and cells_per_region must have the same size.")
+            end
+
+            obj.region_lengths = region_lengths;
+            obj.cells_per_region = cells_per_region;
+            obj.region_boundaries = [0; cumsum(region_lengths)];
+            obj.num_cells = sum(cells_per_region);
+            
+            % Create a uniform mesh in each region
+            dx_per_region = region_lengths ./ cells_per_region;
+            obj.delta_x = repelem(dx_per_region, cells_per_region);
+            region_idx_vec = (1:length(region_lengths))';
+            obj.cell_region_idx = repelem(region_idx_vec, cells_per_region);
+
+            region_lft_boundary = repelem(obj.region_boundaries(1:end-1), cells_per_region);
+            cells_before = repelem([0; cumsum(cells_per_region(1:end-1))], cells_per_region);
+            j_local = (1:obj.num_cells)' - cells_before;
+            obj.cell_centers = region_lft_boundary + obj.delta_x .* (j_local - 0.5);
+
+            left_region_boundary = repelem(obj.region_boundaries(1:end-1), cells_per_region);
+            cell_start_ = cumsum(cells_per_region) - cells_per_region;
+            local_j = (1:obj.num_cells)' - repelem(cell_start, cells_per_region);
+            obj.cell_centers = x_left + obj.delta_x .* (local_j - 0.5);
+        end
+
+        function displayMesh(obj)
+            fprintf('======================\n    MESH DATA    \n======================\n\n');
+            fprintf('Total Length: %.2f cm\n', obj.region_boundaries(end));
+            fprintf('Total Cells:  %d\n',      obj.num_cells);
+            fprintf('Regions:      %d\n\n',    length(obj.region_lengths));
+            Region = (1:length(obj.region_lengths))';
+            Length = obj.region_lengths;
+            Cells  = obj.cells_per_region;
+            disp(table(Region, Length, Cells));
+        end
+    end
+end

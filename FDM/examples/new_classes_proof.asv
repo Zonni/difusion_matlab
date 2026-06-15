@@ -1,0 +1,9 @@
+clearvars;
+close all;
+addpath(fullfile(fileparts(mfilename('fullpath')), '..', 'src'));
+
+region_lenghts_x = [0; 0.5; 0 1]
+
+region_lenghts_y = [0; 0.12; 0.23; 1]
+
+mesh2d = Mesh_2D_FDM(region_boundaries_x, region_boundaries_y)
